@@ -64,7 +64,7 @@ std::ostream& operator<<(std::ostream& out, const PointLatLon& p) {
 
 
 struct Variogram {
-    Variogram() = default;
+    Variogram(double nugget, double sill, double range, double a) : n_(nugget), s_(sill), r_(range), a_(a) {}
 
     Variogram(const Variogram&)      = delete;
     Variogram(Variogram&&)           = delete;
@@ -74,40 +74,39 @@ struct Variogram {
     virtual ~Variogram() = default;
 
     virtual double calculate(double h) = 0;
+
+    const double n_;
+    const double s_;
+    const double r_;
+    const double a_;
 };
 
 
 struct Exponential final : Variogram {
-    Exponential(double nugget, double sill, double range) : n_(nugget), s_(sill), r(range) {}
+    Exponential(double nugget, double sill, double range, double a) : Variogram(nugget, sill, range, a) {}
 
-    double calculate(double h) final { return n_ + s_ * (1 - std::exp(-h / r)); }
-
-    const double n_;
-    const double s_;
-    const double r;
+    double calculate(double h) final { return (s_ - n_) * (1 - std::exp(-h / (r_ * a_))) + n_; }
 };
 
 
 struct Spherical final : Variogram {
-    Spherical(double nugget, double sill, double range) : n_(nugget), s(sill), r_(range), r3_(range * range * range) {}
+    Spherical(double nugget, double sill, double range, double a) :
+        Variogram(nugget, sill, range, a), c1_(3. / (2. * r_)), c2_(0.5 / (r_ * r_ * r_)) {}
 
-    double calculate(double h) final { return n_ + s * (3 * h / (2. * r_) - h * h * h / (2 * r3_)); }
+    double calculate(double h) final { return (s_ - n_) * (h * c1_ - h * h * h * c2_) + n_; }
 
-    const double n_;
-    const double s;
-    const double r_;
-    const double r3_;
+    const double c1_;
+    const double c2_;
 };
 
 
 struct Gaussian final : Variogram {
-    Gaussian(double nugget, double sill, double range) : n_(nugget), s(sill), r2_(range * range) {}
+    Gaussian(double nugget, double sill, double range, double a) :
+        Variogram(nugget, sill, range, a), c_(1. / r_ * r_ * a_) {}
 
-    double calculate(double h) final { return n_ + s * (1 - std::exp(-(h * h) / r2_)); }
+    double calculate(double h) final { return (s_ - n_) * (1. - std::exp(-h * h * c_)) + n_; }
 
-    const double n_;
-    const double s;
-    const double r2_;
+    const double c_;
 };
 
 
@@ -117,34 +116,32 @@ int main(int argc, char* argv[]) {
     std::vector<PointLatLon> points = {{0., 0.}, {1., 3.}, {2., 1.}, {3., 4.}, {4., 2.}};
     std::vector<double> values{10., 20., 15., 25., 30.};
 
-    std::unique_ptr<Variogram> variogram(new Exponential(0., 1., 1.));
+    std::unique_ptr<Variogram> variogram(new Exponential(0., 1., 1., 1.));
 
 
     auto n = static_cast<Eigen::Index>(points.size());
 
-    Eigen::MatrixXd A(n + 1, n + 1);
-    Eigen::VectorXd b(n + 1);
-    Eigen::VectorXd weights;
-
+    Eigen::MatrixXd M(n + 1, n + 1);
     for (Eigen::Index i = 0; i < n; ++i) {
         for (Eigen::Index j = i + 1; j < n; ++j) {
-            A(i, j) = A(j, i) = variogram->calculate(PointLatLon::distance(points[i], points[j]));
+            M(i, j) = M(j, i) = variogram->calculate(PointLatLon::distance(points[i], points[j]));
         }
 
-        A(i, n) = A(n, i) = 1;
+        M(i, n) = M(n, i) = 1;
     }
 
-    A(n, n) = 0;
+    const auto W = M.inverse();
 
     for (size_t c = 0; c < 10; ++c) {
         auto target = PointLatLon::random();
 
+        Eigen::VectorXd b(n + 1);
         for (Eigen::Index i = 0; i < n; ++i) {
             b(i) = variogram->calculate(PointLatLon::distance(points[i], target));
         }
         b(n) = 1;
 
-        weights = A.inverse() * b;
+        auto weights = W * b;
 
         double interpolated = 0.;
         for (int i = 0; i < n; ++i) {
