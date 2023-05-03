@@ -106,12 +106,11 @@ int main(int argc, char* argv[]) {
     Eigen::VectorXd weights;
 
     for (Eigen::Index i = 0; i < n; ++i) {
-        for (Eigen::Index j = 0; j < n; ++j) {
-            A(i, j) = variogram->calculate(PointLatLon::distance(data[i], data[j]));
+        for (Eigen::Index j = i + 1; j < n; ++j) {
+            A(i, j) = A(j, i) = variogram->calculate(PointLatLon::distance(data[i], data[j]));
         }
 
-        A(i, n) = 1;
-        A(n, i) = 1;
+        A(i, n) = A(n, i) = 1;
     }
 
     A(n, n) = 0;
