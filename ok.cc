@@ -38,11 +38,10 @@
 #include <Eigen/Dense>
 
 
-struct PointLatLon : std::array<double, 3> {
-    PointLatLon(double lat, double lon, double value = 0.) : array{lat, lon, value} {}
+struct PointLatLon : std::array<double, 2> {
+    PointLatLon(double lat, double lon) : array{lat, lon} {}
     double& lat   = array::operator[](0);
     double& lon   = array::operator[](1);
-    double& value = array::operator[](2);
 
     static double distance(const PointLatLon& p, const PointLatLon& q) {
         auto dlon = p.lon - q.lon;
@@ -79,27 +78,49 @@ struct Variogram {
 
 
 struct Exponential final : Variogram {
-    Exponential(double nugget, double sill, double range) : nugget_(nugget), sill_(sill), range_(range) {}
+    Exponential(double nugget, double sill, double range) : n_(nugget), s_(sill), r(range) {}
 
-    double calculate(double h) final { return nugget_ + sill_ * (1 - std::exp(-h / range_)); }
+    double calculate(double h) final { return n_ + s_ * (1 - std::exp(-h / r)); }
 
-    const double nugget_;
-    const double sill_;
-    const double range_;
+    const double n_;
+    const double s_;
+    const double r;
+};
+
+
+struct Spherical final : Variogram {
+    Spherical(double nugget, double sill, double range) : n_(nugget), s(sill), r_(range), r3_(range * range * range) {}
+
+    double calculate(double h) final { return n_ + s * (3 * h / (2. * r_) - h * h * h / (2 * r3_)); }
+
+    const double n_;
+    const double s;
+    const double r_;
+    const double r3_;
+};
+
+
+struct Gaussian final : Variogram {
+    Gaussian(double nugget, double sill, double range) : n_(nugget), s(sill), r2_(range * range) {}
+
+    double calculate(double h) final { return n_ + s * (1 - std::exp(-(h * h) / r2_)); }
+
+    const double n_;
+    const double s;
+    const double r2_;
 };
 
 
 int main(int argc, char* argv[]) {
     // Ordinary Kriging
 
-    std::vector<PointLatLon> data = {
-        {0., 0., 10.}, {1., 3., 20.}, {2., 1., 15.}, {3., 4., 25.}, {4., 2., 30.},
-    };
+    std::vector<PointLatLon> points = {{0., 0.}, {1., 3.}, {2., 1.}, {3., 4.}, {4., 2.}};
+    std::vector<double> values{10., 20., 15., 25., 30.};
 
     std::unique_ptr<Variogram> variogram(new Exponential(0., 1., 1.));
 
 
-    auto n = static_cast<Eigen::Index>(data.size());
+    auto n = static_cast<Eigen::Index>(points.size());
 
     Eigen::MatrixXd A(n + 1, n + 1);
     Eigen::VectorXd b(n + 1);
@@ -107,7 +128,7 @@ int main(int argc, char* argv[]) {
 
     for (Eigen::Index i = 0; i < n; ++i) {
         for (Eigen::Index j = i + 1; j < n; ++j) {
-            A(i, j) = A(j, i) = variogram->calculate(PointLatLon::distance(data[i], data[j]));
+            A(i, j) = A(j, i) = variogram->calculate(PointLatLon::distance(points[i], points[j]));
         }
 
         A(i, n) = A(n, i) = 1;
@@ -119,7 +140,7 @@ int main(int argc, char* argv[]) {
         auto target = PointLatLon::random();
 
         for (Eigen::Index i = 0; i < n; ++i) {
-            b(i) = variogram->calculate(PointLatLon::distance(data[i], target));
+            b(i) = variogram->calculate(PointLatLon::distance(points[i], target));
         }
         b(n) = 1;
 
@@ -127,7 +148,7 @@ int main(int argc, char* argv[]) {
 
         double interpolated = 0.;
         for (int i = 0; i < n; ++i) {
-            interpolated += weights(i) * data[i].value;
+            interpolated += weights(i) * values[i];
         }
 
         std::cout << "Interpolated value at " << target << ": " << interpolated << std::endl;
